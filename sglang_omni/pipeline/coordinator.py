@@ -722,6 +722,16 @@ class Coordinator:
     async def _handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
         request_id = msg.request_id
+        if msg.modality == "metrics":
+            metrics = getattr(self, "request_metrics", None)
+            if metrics is not None:
+                metrics.observe_tokens(
+                    request_id,
+                    msg.from_stage,
+                    msg.chunk["prompt_tokens"],
+                    msg.chunk["completion_tokens"],
+                )
+            return
         if request_id not in self._stream_queues:
             return
         _emit_event(

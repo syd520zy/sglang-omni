@@ -381,6 +381,7 @@ async def _run_server(
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
     enable_realtime: bool = False,
+    enable_metrics: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -390,6 +391,10 @@ async def _run_server(
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
     # 0. Check port availability before loading models
+    if enable_metrics:
+        from sglang_omni.serve.metrics import validate_metrics_environment
+
+        validate_metrics_environment()
     port = _find_available_port(host, port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
@@ -423,6 +428,7 @@ async def _run_server(
         client = Client(coordinator, **cl_kwargs)
         app = create_app(
             client,
+            enable_metrics=enable_metrics,
             model_name=model_name or pipeline_config.name,
             requires_uploaded_voice_for_named_voice=(
                 pipeline_config.requires_uploaded_voice_for_named_voice()
@@ -520,6 +526,7 @@ def launch_server(
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
     enable_realtime: bool = False,
+    enable_metrics: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -553,6 +560,7 @@ def launch_server(
             log_level=log_level,
             client_kwargs=client_kwargs,
             enable_realtime=enable_realtime,
+            enable_metrics=enable_metrics,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,

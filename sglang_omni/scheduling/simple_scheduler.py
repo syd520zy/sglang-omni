@@ -79,6 +79,32 @@ class SimpleScheduler:
         self._abort_lock = threading.Lock()
         self._running = False
         self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
+        self._metrics_lock = threading.Lock()
+        self._waiting_requests: set[str] = set()
+        self._running_requests: set[str] = set()
+
+    def enqueue(self, message: IncomingMessage) -> None:
+        if message.type == "new_request":
+            with self._metrics_lock:
+                self._waiting_requests.add(message.request_id)
+        self.inbox.put(message)
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        with self._metrics_lock:
+            return {
+                "num_running_reqs": len(self._running_requests),
+                "num_queue_reqs": len(self._waiting_requests),
+            }
+
+    def _metrics_begin(self, request_ids: list[str]) -> None:
+        with self._metrics_lock:
+            self._waiting_requests.difference_update(request_ids)
+            self._running_requests.update(request_ids)
+
+    def _metrics_end(self, request_ids: list[str]) -> None:
+        with self._metrics_lock:
+            self._waiting_requests.difference_update(request_ids)
+            self._running_requests.difference_update(request_ids)
 
     def _cleanup_aborted_request(self, request_id: str) -> None:
         if self._abort_callback is None:
@@ -189,6 +215,15 @@ class SimpleScheduler:
     def _run_single(
         self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
     ) -> None:
+        self._metrics_begin([msg.request_id])
+        try:
+            self._run_single_untracked(msg, loop)
+        finally:
+            self._metrics_end([msg.request_id])
+
+    def _run_single_untracked(
+        self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
+    ) -> None:
         if self._consume_if_aborted(msg.request_id):
             return
         try:
@@ -207,6 +242,16 @@ class SimpleScheduler:
         self,
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        request_ids = [msg.request_id for msg in batch]
+        self._metrics_begin(request_ids)
+        try:
+            self._run_batch_untracked(batch, loop)
+        finally:
+            self._metrics_end(request_ids)
+
+    def _run_batch_untracked(
+        self, batch: list[IncomingMessage], loop: asyncio.AbstractEventLoop
     ) -> None:
         if self._batch_fn is None or len(batch) <= 1:
             for msg in batch:
@@ -304,6 +349,7 @@ class SimpleScheduler:
                     continue
                 if self._consume_if_aborted(msg.request_id):
                     continue
+                self._metrics_begin([msg.request_id])
                 try:
                     result = await asyncio.to_thread(
                         self._run_compute_in_thread, msg.data
@@ -318,6 +364,8 @@ class SimpleScheduler:
                         "SimpleScheduler: compute_fn failed for %s", msg.request_id
                     )
                     self._emit_error(msg.request_id, exc, self.outbox)
+                finally:
+                    self._metrics_end([msg.request_id])
 
         bridge_task = asyncio.create_task(bridge_inbox())
         worker_tasks = [
@@ -331,6 +379,8 @@ class SimpleScheduler:
 
     def stop(self) -> None:
         self._running = False
+        with self._metrics_lock:
+            self._waiting_requests.clear()
         with self._shutdown_lock:
             callback = self._shutdown_callback
             self._shutdown_callback = None
@@ -338,6 +388,8 @@ class SimpleScheduler:
             callback()
 
     def abort(self, request_id: str) -> None:
+        with self._metrics_lock:
+            self._waiting_requests.discard(request_id)
         with self._abort_lock:
             self._aborted.add(request_id)
             if len(self._aborted) > 10000:

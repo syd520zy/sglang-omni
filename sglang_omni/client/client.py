@@ -46,6 +46,7 @@ class Client:
         self._coordinator = coordinator
         self._result_builder = result_builder or self._default_result_builder
         self._stream_builder = stream_builder or self._default_stream_builder
+        self.request_metrics = None
 
     # ------------------------------------------------------------------
     # Low-level generate (backward compatible)
@@ -56,8 +57,23 @@ class Client:
         request: GenerateRequest,
         request_id: str | None = None,
     ) -> AsyncIterator[GenerateChunk]:
+        request_id = request_id or str(uuid.uuid4())
+        source = self._generate_uninstrumented(request, request_id)
+        if self.request_metrics is not None:
+            source = self.request_metrics.generate(source, request.stream, request_id)
+        async with aclosing(source):
+            async for chunk in source:
+                yield chunk
+
+    async def _generate_uninstrumented(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ) -> AsyncIterator[GenerateChunk]:
         req_id = request_id or str(uuid.uuid4())
         omni_request = self._build_omni_request(request)
+        if self.request_metrics is not None:
+            omni_request.metadata["omni_metrics_enabled"] = True
         if request.stream:
             coordinator_stream = self._coordinator.stream(req_id, omni_request)
             async with aclosing(coordinator_stream):

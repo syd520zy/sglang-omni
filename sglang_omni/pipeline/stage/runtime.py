@@ -1030,6 +1030,12 @@ class Stage:
 
     async def _run_admin_operation(self, operation: Any) -> AdminResult:
         try:
+            if operation.action == "metrics":
+                snapshot = getattr(self.scheduler, "metrics_snapshot", None)
+                if snapshot is not None:
+                    return self._admin_result(
+                        operation, success=True, data=snapshot(), message="ok"
+                    )
             handler = getattr(self.scheduler, "admin", None)
             if handler is None:
                 return self._admin_result(
@@ -1134,7 +1140,16 @@ class Stage:
                     else:
                         self._discard_kv_transfer(out.data)
                 elif out.request_id in self._active_requests:
-                    if out.type == "result":
+                    if out.type == "metrics":
+                        await self.control_plane.send_stream(
+                            StreamMessage(
+                                request_id=out.request_id,
+                                from_stage=self.name,
+                                chunk=out.data,
+                                modality="metrics",
+                            )
+                        )
+                    elif out.type == "result":
                         await self._route_result(out.request_id, out.data)
                     elif out.type == "stream":
                         if out.target is None:

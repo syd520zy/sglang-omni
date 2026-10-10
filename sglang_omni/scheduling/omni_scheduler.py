@@ -61,6 +61,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.token_metrics import token_metrics_message
 from sglang_omni.scheduling.types import ARRequestData, DeferredAdmission
 
 logger = logging.getLogger(__name__)
@@ -1638,6 +1639,13 @@ class OmniScheduler:
         for req in reqs:
             if skip_req is not None and req is skip_req:
                 continue
+            telemetry = token_metrics_message(
+                req,
+                is_entry_rank=self.is_entry_rank,
+                aborted=isinstance(req.finished_reason, FINISH_ABORT),
+            )
+            if telemetry is not None:
+                self.outbox.put(telemetry)
             if not req.finished():
                 continue
 
@@ -1951,6 +1959,20 @@ class OmniScheduler:
             "message": f"unsupported admin action: {action}",
             "data": {"skipped": True, "unsupported": True},
         }
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        with self._request_admission_lock:
+            running = {
+                req.rid
+                for batch in (self.running_batch, self.cur_batch)
+                if batch is not None
+                for req in batch.reqs
+                if not req.finished()
+            }
+            return {
+                "num_running_reqs": len(running),
+                "num_queue_reqs": len(self.waiting_queue),
+            }
 
     def _admin_model_info(self) -> dict[str, Any]:
         info = self.model_worker.model_info()
