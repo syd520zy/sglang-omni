@@ -221,6 +221,7 @@ def create_app(
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
+    enable_metrics: bool = False,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -333,6 +334,30 @@ def create_app(
         register_realtime(app)
     else:
         pass
+
+    if enable_metrics:
+        from fastapi.responses import Response
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        from sglang_omni.serve.metrics import MetricsMiddleware, RequestMetrics
+
+        app.state.request_metrics = RequestMetrics(app.state.model_name)
+        client.request_metrics = app.state.request_metrics
+        if getattr(client, "coordinator", None) is not None:
+            client.coordinator.request_metrics = app.state.request_metrics
+        app.add_middleware(MetricsMiddleware, metrics=app.state.request_metrics)
+
+        @app.get("/metrics", include_in_schema=False)
+        async def metrics() -> Response:
+            try:
+                await app.state.request_metrics.refresh_scheduler(client)
+            except Exception:
+                # Do not serve a successful scrape with stale scheduler values.
+                return Response("Scheduler metrics unavailable\n", status_code=503)
+            return Response(
+                generate_latest(app.state.request_metrics.registry),
+                headers={"Content-Type": CONTENT_TYPE_LATEST},
+            )
 
     return app
 

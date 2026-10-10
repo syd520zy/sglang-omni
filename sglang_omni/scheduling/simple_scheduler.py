@@ -96,6 +96,26 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.abort_lock = threading.Lock()
         self.running = False
         self.pending_messages: collections.deque[IncomingMessage] = collections.deque()
+        self.metrics_lock = threading.Lock()
+        self.waiting_requests: set[str] = set()
+        self.running_requests: set[str] = set()
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        with self.metrics_lock:
+            return {
+                "num_running_reqs": len(self.running_requests),
+                "num_queue_reqs": len(self.waiting_requests),
+            }
+
+    def metrics_begin(self, request_ids: list[str]) -> None:
+        with self.metrics_lock:
+            self.waiting_requests.difference_update(request_ids)
+            self.running_requests.update(request_ids)
+
+    def metrics_end(self, request_ids: list[str]) -> None:
+        with self.metrics_lock:
+            self.waiting_requests.difference_update(request_ids)
+            self.running_requests.difference_update(request_ids)
 
     def cleanup_aborted_request(self, request_id: str) -> None:
         if self.abort_callback is None:
@@ -127,6 +147,9 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             self.request_arrival_hook(message.data)
         else:
             pass
+        if message.type == "new_request":
+            with self.metrics_lock:
+                self.waiting_requests.add(message.request_id)
         self.inbox.put(message)
 
     def message_cost(self, msg: IncomingMessage) -> int:
@@ -224,6 +247,15 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         )
 
     def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
+        self.metrics_begin([msg.request_id])
+        try:
+            self.run_single_untracked(msg, loop)
+        finally:
+            self.metrics_end([msg.request_id])
+
+    def run_single_untracked(
+        self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
+    ) -> None:
         if self.consume_if_aborted(msg.request_id):
             return
         else:
@@ -250,6 +282,16 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self,
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        request_ids = [msg.request_id for msg in batch]
+        self.metrics_begin(request_ids)
+        try:
+            self.run_batch_untracked(batch, loop)
+        finally:
+            self.metrics_end(request_ids)
+
+    def run_batch_untracked(
+        self, batch: list[IncomingMessage], loop: asyncio.AbstractEventLoop
     ) -> None:
         if self.batch_fn is None or len(batch) <= 1:
             for msg in batch:
@@ -375,6 +417,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     continue
                 else:
                     pass
+                self.metrics_begin([msg.request_id])
                 try:
                     result = await asyncio.to_thread(
                         self.run_compute_in_thread, msg.data
@@ -393,6 +436,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                         "SimpleScheduler: compute_fn failed for %s", msg.request_id
                     )
                     self.emit_error(msg.request_id, exc, self.outbox)
+                finally:
+                    self.metrics_end([msg.request_id])
 
         bridge_task = asyncio.create_task(bridge_inbox())
         worker_tasks = [
@@ -406,6 +451,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
 
     def stop(self) -> None:
         self.running = False
+        with self.metrics_lock:
+            self.waiting_requests.clear()
         with self.shutdown_lock:
             callback = self.shutdown_callback
             self.shutdown_callback = None
@@ -415,6 +462,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             pass
 
     def abort(self, request_id: str) -> None:
+        with self.metrics_lock:
+            self.waiting_requests.discard(request_id)
         with self.abort_lock:
             self.aborted.add(request_id)
             if len(self.aborted) > 10000:
