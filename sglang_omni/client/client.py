@@ -94,6 +94,7 @@ class Client:
         audio_chunks: list[Any] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
+        final_usage: UsageInfo | None = None
         finish_reason: str | None = None
         logprobs_parts: list[Any] = []
         saw_output_token_logprobs = False
@@ -103,6 +104,8 @@ class Client:
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
+            if chunk.usage is not None:
+                final_usage = chunk.usage
             if chunk.text:
                 text_parts.append(chunk.text)
             if chunk.audio_data is not None:
@@ -150,7 +153,7 @@ class Client:
             text=full_text,
             audio=audio,
             finish_reason=finish_reason or "stop",
-            usage=last_chunk.usage,
+            usage=final_usage,
             output_token_logprobs=(
                 logprobs_parts if saw_output_token_logprobs else None
             ),
@@ -226,6 +229,7 @@ class Client:
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         extra_params = dict(request.extra_params)
+        final_usage: UsageInfo | None = None
         extra_params.pop("stream", None)
         request = replace(request, stream=False, extra_params=extra_params)
 
@@ -235,6 +239,8 @@ class Client:
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
             last_chunk = chunk
+            if chunk.usage is not None:
+                final_usage = chunk.usage
 
         if not audio_chunks:
             raise ClientError("No audio output generated from the pipeline.")
@@ -271,7 +277,7 @@ class Client:
             mime_type=mime_type,
             format=actual_format,
             sample_rate=sample_rate,
-            usage=last_chunk.usage if last_chunk else None,
+            usage=final_usage,
             finish_reason=last_chunk.finish_reason if last_chunk else None,
         )
 
@@ -454,6 +460,12 @@ class Client:
                 usage["total_tokens"] = (prompt_tokens or 0) + (completion_tokens or 0)
         if "engine_time_s" not in usage and data.get("engine_time_s") is not None:
             usage["engine_time_s"] = data.get("engine_time_s")
+        for key in ("prompt_tokens_details", "reasoning_tokens"):
+            if key not in usage and data.get(key) is not None:
+                usage[key] = data[key]
+        cached_tokens = usage.get("cached_tokens", data.get("cached_tokens"))
+        if "prompt_tokens_details" not in usage and cached_tokens is not None:
+            usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
         return UsageInfo.from_dict(usage)
 
     @staticmethod

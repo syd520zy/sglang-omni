@@ -27,6 +27,8 @@ class UsageInfo:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     engine_time_s: float | None = None
+    prompt_tokens_details: dict[str, int] | None = None
+    reasoning_tokens: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "UsageInfo | None":
@@ -37,6 +39,8 @@ class UsageInfo:
             completion_tokens=data.get("completion_tokens"),
             total_tokens=data.get("total_tokens"),
             engine_time_s=data.get("engine_time_s"),
+            prompt_tokens_details=data.get("prompt_tokens_details"),
+            reasoning_tokens=data.get("reasoning_tokens"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,6 +51,10 @@ class UsageInfo:
         }
         if self.engine_time_s is not None:
             d["engine_time_s"] = self.engine_time_s
+        if self.prompt_tokens_details is not None:
+            d["prompt_tokens_details"] = dict(self.prompt_tokens_details)
+        if self.reasoning_tokens is not None:
+            d["reasoning_tokens"] = self.reasoning_tokens
         return d
 
 
