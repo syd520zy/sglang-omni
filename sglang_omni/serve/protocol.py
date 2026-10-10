@@ -14,10 +14,18 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
 from sglang_omni.client.types import UsageInfo
+
+
+class PromptTokensDetails(BaseModel):
+    cached_tokens: int | None = None
+    image_tokens: int | None = None
+    audio_tokens: int | None = None
+    video_tokens: int | None = None
 
 
 class UsageResponse(BaseModel):
@@ -26,6 +34,26 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details: PromptTokensDetails | None = None
+    reasoning_tokens: int | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_usage(self, handler):
+        data = handler(self)
+        for key in ("prompt_tokens_details", "reasoning_tokens"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        if "prompt_tokens_details" in data:
+            data["prompt_tokens_details"] = {
+                key: value
+                for key, value in data["prompt_tokens_details"].items()
+                if value is not None
+            }
+        return data
+
+
+class StreamOptions(BaseModel):
+    include_usage: bool = False
 
 
 class ChatMessage(BaseModel):
@@ -68,6 +96,7 @@ class ChatCompletionRequest(BaseModel):
 
     # Streaming
     stream: bool = False
+    stream_options: StreamOptions | None = None
 
     # Multi-modal output control
     modalities: list[str] | None = None  # e.g. ["text", "audio"]
